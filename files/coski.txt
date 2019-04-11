@@ -1,0 +1,24 @@
+0.
+Czy w folderze są tylko pliki? Czy są subfoldery?
+
+Notes:
+
+Server:
+Rodzaje wiadomości:
+
+msg1: Lista plików:
+1. Dwubajtowa liczba: 1
+2. 4bajtowa długość pola z nazwami plików (liczba całkowita bez znaku)
+3. Kolejne pola to nazwy plików rozdzielone |
+
+
+msg2: Odpowiedź na prośbę o przesłanie fragmentu pliku
+
+success:
+1. Dwubajtowa liczba: 3
+2. 4bajtowa długość fragmentu tekstu
+3. Kolejne bajty fragmentu tekstu
+
+failure:
+1. Dwubajtowa liczba: 2
+2. 4bajtowa liczba ~ powód odmowy (1, 2, 3)
