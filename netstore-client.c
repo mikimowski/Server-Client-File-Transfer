@@ -29,7 +29,6 @@ struct __attribute__((__packed__)) msg_client {
   uint32_t start_addr;
   uint32_t bytes_to_send;
   uint16_t file_name_len;
-  char file_name[MAX_FILE_NAME_LEN];
 };
 
 struct __attribute__((__packed__)) msg_server {
@@ -195,17 +194,74 @@ void display_files_names_list(char files_names_buffer[], int32_t len) {
     }
 }
 
-struct user_command read_user_command() {
-    struct user_command comm;
-    scanf("%d", comm.file_id);
-    scanf("%d", comm.start_addr);
-    scanf("%d", comm.end_addr);
-
-    return comm;
+void read_user_command(struct user_command *comm) {
+  comm->file_id = 2;
+  comm->start_addr = 1;
+  comm->end_addr = 10;
+/*    scanf("%d", &comm->file_id);
+    scanf("%d", &comm->start_addr);
+    scanf("%d", &comm->end_addr);*/
 }
 
-void send_file_fragment_request(int sockfd, struct user_command comm) {
+/// Returns file's name length
+uint16_t fill_buffer_with_file_name(int32_t file_id, const char files_names_buffer[], char buffer[]) {
+#ifdef DEBUG
+    printf("filling buffer with file name\n");
+#endif
+    int32_t curr_file_id = 0;
+    int32_t file_name_length = 0;
+    int32_t i = 0;
 
+    while (curr_file_id < file_id) {
+        if (files_names_buffer[i] == '|')
+            curr_file_id++;
+        i++;
+    }
+
+    int32_t buff_index = sizeof(struct msg_client);
+    while (files_names_buffer[i] != '|') {
+        buffer[buff_index++] = files_names_buffer[i++];
+        file_name_length++;
+    }
+
+#ifdef DEBUG
+    printf("filling buffer with file name finished\n");
+    printf("file name: ");
+    for (i = sizeof(struct msg_client); i < sizeof(struct msg_client) + file_name_length; i++)
+        printf("%c", buffer[i]);
+    printf("\n");
+#endif
+    return file_name_length;
+}
+
+/// Returns data length in buffer
+size_t fill_buffer_with_fragment_request(const struct user_command* comm, char files_names_buffer[], char buffer[]) {
+#ifdef DEBUG
+    printf("setting file fragment request\n");
+#endif
+    struct msg_client msg;
+    size_t file_name_length;
+
+    msg.msg_type = htons(FILE_FRAGMENT_REQUEST);
+    msg.start_addr = htonl(comm->start_addr);
+    msg.bytes_to_send = htonl(comm->end_addr - comm->start_addr + 1);
+    file_name_length = fill_buffer_with_file_name(comm->file_id, files_names_buffer, buffer);
+    msg.file_name_len = htons(file_name_length);
+
+    memcpy(buffer, &msg, sizeof(struct msg_client));
+
+#ifdef DEBUG
+    printf("msg: %d %d %d %d\n", ntohs(msg.msg_type), ntohl(msg.start_addr), ntohl(msg.bytes_to_send), ntohs(msg.file_name_len));
+    printf("\nfile fragment request set\n");
+#endif
+    return sizeof(struct msg_client) + file_name_length;
+}
+
+void send_file_fragment_request(int sockfd, struct user_command* comm, char files_names_buffer[], char buffer[]) {
+    size_t data_len = fill_buffer_with_fragment_request(comm, files_names_buffer, buffer);
+
+    if (write(sockfd, buffer, data_len) != data_len)
+        syserr("partial / failed write");
 }
 
 void receive_file_fragment(int sockfd) {
@@ -216,7 +272,8 @@ int main(int argc, char *argv[]) {
     int sockfd;
     uint32_t list_len = 0;
     char files_names_buffer[BUFFER_SIZE];
-
+    char buffer[BUFFER_SIZE];
+    struct user_command comm;
     check_argc(argc, argv);
     //char const *port = argc == 3 ? argv[2] : DEF_PORT_NUM;
     char const *port = "6543";
@@ -231,6 +288,8 @@ int main(int argc, char *argv[]) {
     send_files_names_request(sockfd);
     receive_files_names(sockfd, files_names_buffer, &list_len);
     display_files_names_list(files_names_buffer, list_len);
+    read_user_command(&comm);
+    send_file_fragment_request(sockfd, &comm, files_names_buffer, buffer);
 
     return 0;
 }

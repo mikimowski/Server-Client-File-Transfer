@@ -15,6 +15,7 @@
 #define QUEUE_LENGTH 5
 #define BUFFER_SIZE 512000
 #define CLIENT_MSG_BUFFER_SIZE 256
+#define NUMBER_OF_MSG_TYPE 2
 
 
 struct __attribute__((__packed__)) msg_client {
@@ -22,7 +23,6 @@ struct __attribute__((__packed__)) msg_client {
     uint32_t start_addr;
     uint32_t bytes_to_send;
     uint16_t file_name_len;
-    char file_name[CLIENT_MSG_BUFFER_SIZE];
 };
 
 struct __attribute__((__packed__)) msg_server {
@@ -119,7 +119,6 @@ void send_files_names(int msg_sockfd, DIR *dir_stream, char buffer[]) {
 #ifdef DEBUG
     printf("sending files names list\n");
 #endif
-    struct dirent *dir_entry;
     struct msg_server msg;
     size_t data_len = sizeof(struct msg_server);
 
@@ -135,21 +134,15 @@ void send_files_names(int msg_sockfd, DIR *dir_stream, char buffer[]) {
     printf("files name list sent\n");
 #endif
 }
-/*
-void request_file_fragment(char const* file_path, int32_t segment_length_to_send, char buffer[], int32_t msg_sock) {
-    ssize_t send_length;
-    int32_t send_length_cumulative = 0;
-    FILE fp = fopen(file_path, "r");
-    if (fp == NULL) {
-        // error_handling
-    }
 
-    while (send_length_cumulative < segment_length_to_send) {
-        send_length = write(msg_sock, buffer, )
-    }
-}*/
+bool is_expected(uint16_t msg_type, const uint16_t expected[], size_t len) {
+    for (size_t i = 0; i < len; i++)
+        if (msg_type == expected[i])
+            return true;
+    return false;
+}
 
-uint16_t read_msg_type(int msg_sockfd) {
+uint16_t read_msg_type(int msg_sockfd, const uint16_t expected[], size_t len) {
 #ifdef DEBUG
     printf("reading msg type\n");
 #endif
@@ -167,6 +160,9 @@ uint16_t read_msg_type(int msg_sockfd) {
     } while (read_curr > 0);
 
     msg_type = ntohs(msg_type);
+
+    if (!is_expected(msg_type, expected, len))
+        syserr("wrong msg_type");
 #ifdef DEBUG
     printf("msg type read: %d\n", msg_type);
 #endif
@@ -174,23 +170,92 @@ uint16_t read_msg_type(int msg_sockfd) {
 }
 
 
+void receive_file_fragment_request_info(int msg_sockfd, struct msg_client *msg) {
+#ifdef DEBUG
+    printf("receive_file_fragment_request_info\n");
+#endif
+    ssize_t read_curr;
+    size_t remains, read_all = 0; // TODO msg_type already read chcielibyśmy,,, więc sizeof(uint16_t)...
+
+    do {
+        remains = sizeof(struct msg_client) - read_all;
+        read_curr = read(msg_sockfd, msg + read_all, remains);
+        if (read_curr < 0)
+            syserr("reading message type");
+
+        read_all += read_curr;
+    } while (read_curr > 0);
+
+    msg->start_addr = ntohl(msg->start_addr);
+    msg->bytes_to_send = ntohl(msg->bytes_to_send);
+    msg->file_name_len = ntohs(msg->file_name_len);
+#ifdef DEBUG
+    printf("msg_info: ");
+    printf("%d %d %d\n", msg->start_addr, msg->bytes_to_send, msg->file_name_len);
+    printf("enf of receive_file_fragment_request_info\n");
+#endif
+}
+
+void receive_file_fragment_request_file_name(int msg_sockfd, uint16_t file_name_len, char buffer[]) {
+#ifdef DEBUG
+    printf("receive_file_fragment_request_file_name\n");
+#endif
+    ssize_t read_curr;
+    size_t read_all = 0, remains;
+
+    do {
+        remains = file_name_len - read_all;
+        read_curr = read(msg_sockfd, buffer + read_all, remains);
+        if (read_curr < 0)
+            syserr("reading message type");
+
+        read_all += read_curr;
+    } while (read_curr > 0);
+
+#ifdef DEBUG
+    printf("end of receive_file_fragment_request_file_name\n");
+    printf("file name: ");
+    for (int i = 0; i < file_name_len; i++)
+        printf("%c", buffer[i]);
+    printf("\n");
+#endif
+}
+
+void send_file_fragment(int msg_sockfd, struct msg_client *msg, char buffer[], uint16_t file_name_len) {
+#ifdef DEBUG
+    printf("send_file_fragment\n");
+#endif
+
+    // TODO
+
+#ifdef DEBUG
+    printf("end of send_file_fragment\n");
+#endif
+}
+
+
 void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_address) {
     int msg_sockfd;
     struct sockaddr_in client_address;
+    struct msg_client msg;
     char buffer[BUFFER_SIZE];
+    uint16_t expected[NUMBER_OF_MSG_TYPE];
 
     while (true) {
         accept_connection(server_sockfd, server_address, &msg_sockfd, &client_address);
 #ifdef DEBUG
     printf("client connected\n");
 #endif
-        switch (read_msg_type(msg_sockfd)) {
+        expected[0] = 1, expected[1] = 2;
+        switch (read_msg_type(msg_sockfd, expected, 2)) {
             case 1:
                 send_files_names(msg_sockfd, dir_stream, buffer);
-// NNO BREAK!!!
+                //  expected[0] = 2;
+                //    read_msg_type(msg_sockfd, expected, 1);
             case 2:
-                // TODO prośba o pliczek...
-                // read_file_request cost tam
+                receive_file_fragment_request_info(msg_sockfd, &msg);
+                receive_file_fragment_request_file_name(msg_sockfd, msg.file_name_len, buffer);
+                send_file_fragment(msg_sockfd, buffer, msg.file_name_len);
                 break;
             default:
                 syserr("unknown message type");
