@@ -264,7 +264,7 @@ void send_file_fragment_request(int sockfd, struct user_command* comm, char file
         syserr("partial / failed write");
 }
 
-void receive_file_fragment(int sockfd) {
+void receive_file_fragment(int sockfd, char buffer[]) {
 
 }
 

@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 #include "err.h"
 
@@ -18,6 +19,7 @@
 #define NUMBER_OF_MSG_TYPE 2
 #define FILES_NAMES_REQUEST 1
 #define FILE_FRAGMENT_REQUEST 2
+#define FILE_FRAGMENT_SENDING 3
 
 
 struct __attribute__((__packed__)) file_fragment_request {
@@ -222,13 +224,33 @@ void receive_file_fragment_request_file_name(int msg_sockfd, uint16_t file_name_
 #endif
 }
 
-void send_file_fragment(int msg_sockfd, const struct file_fragment_request *msg, char buffer[]) {
+
+// TODO NOT FINISHED
+void send_file_fragment(int msg_sockfd, DIR *dir_stream, const struct file_fragment_request *request, char buffer[]) {
 #ifdef DEBUG
     printf("send_file_fragment\n");
 #endif
+    int dir_fd = dirfd(dir_stream);
+    int fd;
+    struct msg_server msg_to_send;
+    size_t data_len, read_from_file;
 
     // TODO
+    buffer[request->file_name_len] = '\0'; // So that we can use it in open()
+    if ((fd = openat(dir_fd, buffer, O_RDONLY)) < 0)
+        syserr("file opening");
+    lseek(fd, request->start_addr, SEEK_SET);
+        // TODO jak jakiś error to krzyczec...
 
+    read_from_file = read(fd, buffer + sizeof(struct msg_server), request->bytes_to_send);
+    msg_to_send.msg_type = htons(FILE_FRAGMENT_SENDING);
+    msg_to_send.param = htonl(read_from_file);
+    memcpy(buffer, &msg_to_send, sizeof(struct msg_server));
+
+    // TODO jakieś closingi itd...
+    data_len = sizeof(struct msg_server) + read_from_file;
+    if (write(msg_sockfd, buffer, data_len) != data_len)
+        syserr("partial / failed write");
 #ifdef DEBUG
     printf("end of send_file_fragment\n");
 #endif
@@ -256,7 +278,7 @@ void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_a
             case 2:
                 receive_file_fragment_request_info(msg_sockfd, &request_msg);
                 receive_file_fragment_request_file_name(msg_sockfd, request_msg.file_name_len, buffer);
-                send_file_fragment(msg_sockfd, &request_msg, buffer);
+                send_file_fragment(msg_sockfd, dir_stream, &request_msg, buffer);
                 break;
             default:
                 syserr("unknown message type");
