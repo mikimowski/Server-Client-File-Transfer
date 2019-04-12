@@ -16,10 +16,11 @@
 #define BUFFER_SIZE 512000
 #define CLIENT_MSG_BUFFER_SIZE 256
 #define NUMBER_OF_MSG_TYPE 2
+#define FILES_NAMES_REQUEST 1
+#define FILE_FRAGMENT_REQUEST 2
 
 
-struct __attribute__((__packed__)) msg_client {
-    uint16_t msg_type;
+struct __attribute__((__packed__)) file_fragment_request {
     uint32_t start_addr;
     uint32_t bytes_to_send;
     uint16_t file_name_len;
@@ -170,7 +171,7 @@ uint16_t read_msg_type(int msg_sockfd, const uint16_t expected[], size_t len) {
 }
 
 
-void receive_file_fragment_request_info(int msg_sockfd, struct msg_client *msg) {
+void receive_file_fragment_request_info(int msg_sockfd, struct file_fragment_request *msg) {
 #ifdef DEBUG
     printf("receive_file_fragment_request_info\n");
 #endif
@@ -178,7 +179,7 @@ void receive_file_fragment_request_info(int msg_sockfd, struct msg_client *msg) 
     size_t remains, read_all = 0; // TODO msg_type already read chcielibyśmy,,, więc sizeof(uint16_t)...
 
     do {
-        remains = sizeof(struct msg_client) - read_all;
+        remains = sizeof(struct file_fragment_request) - read_all;
         read_curr = read(msg_sockfd, msg + read_all, remains);
         if (read_curr < 0)
             syserr("reading message type");
@@ -221,7 +222,7 @@ void receive_file_fragment_request_file_name(int msg_sockfd, uint16_t file_name_
 #endif
 }
 
-void send_file_fragment(int msg_sockfd, struct msg_client *msg, char buffer[], uint16_t file_name_len) {
+void send_file_fragment(int msg_sockfd, const struct file_fragment_request *msg, char buffer[]) {
 #ifdef DEBUG
     printf("send_file_fragment\n");
 #endif
@@ -237,7 +238,7 @@ void send_file_fragment(int msg_sockfd, struct msg_client *msg, char buffer[], u
 void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_address) {
     int msg_sockfd;
     struct sockaddr_in client_address;
-    struct msg_client msg;
+    struct file_fragment_request request_msg;
     char buffer[BUFFER_SIZE];
     uint16_t expected[NUMBER_OF_MSG_TYPE];
 
@@ -250,12 +251,12 @@ void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_a
         switch (read_msg_type(msg_sockfd, expected, 2)) {
             case 1:
                 send_files_names(msg_sockfd, dir_stream, buffer);
-                //  expected[0] = 2;
-                //    read_msg_type(msg_sockfd, expected, 1);
+                expected[0] = 2;
+                read_msg_type(msg_sockfd, expected, 1);
             case 2:
-                receive_file_fragment_request_info(msg_sockfd, &msg);
-                receive_file_fragment_request_file_name(msg_sockfd, msg.file_name_len, buffer);
-                send_file_fragment(msg_sockfd, buffer, msg.file_name_len);
+                receive_file_fragment_request_info(msg_sockfd, &request_msg);
+                receive_file_fragment_request_file_name(msg_sockfd, request_msg.file_name_len, buffer);
+                send_file_fragment(msg_sockfd, &request_msg, buffer);
                 break;
             default:
                 syserr("unknown message type");
@@ -265,7 +266,9 @@ void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_a
     }
 }
 
-/**** DEBUGGIN ****/
+
+
+/**** DEBUGGING ****/
 void display_directory(DIR *dir_stream) {
     struct dirent *dir_entry;
 

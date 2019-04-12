@@ -24,7 +24,7 @@
 
 #define DEBUG
 
-struct __attribute__((__packed__)) msg_client {
+struct __attribute__((__packed__)) file_fragment_request {
   uint16_t msg_type;
   uint32_t start_addr;
   uint32_t bytes_to_send;
@@ -218,7 +218,7 @@ uint16_t fill_buffer_with_file_name(int32_t file_id, const char files_names_buff
         i++;
     }
 
-    int32_t buff_index = sizeof(struct msg_client);
+    int32_t buff_index = sizeof(struct file_fragment_request);
     while (files_names_buffer[i] != '|') {
         buffer[buff_index++] = files_names_buffer[i++];
         file_name_length++;
@@ -227,7 +227,7 @@ uint16_t fill_buffer_with_file_name(int32_t file_id, const char files_names_buff
 #ifdef DEBUG
     printf("filling buffer with file name finished\n");
     printf("file name: ");
-    for (i = sizeof(struct msg_client); i < sizeof(struct msg_client) + file_name_length; i++)
+    for (i = sizeof(struct file_fragment_request); i < sizeof(struct file_fragment_request) + file_name_length; i++)
         printf("%c", buffer[i]);
     printf("\n");
 #endif
@@ -239,7 +239,7 @@ size_t fill_buffer_with_fragment_request(const struct user_command* comm, char f
 #ifdef DEBUG
     printf("setting file fragment request\n");
 #endif
-    struct msg_client msg;
+    struct file_fragment_request msg;
     size_t file_name_length;
 
     msg.msg_type = htons(FILE_FRAGMENT_REQUEST);
@@ -248,13 +248,13 @@ size_t fill_buffer_with_fragment_request(const struct user_command* comm, char f
     file_name_length = fill_buffer_with_file_name(comm->file_id, files_names_buffer, buffer);
     msg.file_name_len = htons(file_name_length);
 
-    memcpy(buffer, &msg, sizeof(struct msg_client));
+    memcpy(buffer, &msg, sizeof(struct file_fragment_request));
 
 #ifdef DEBUG
     printf("msg: %d %d %d %d\n", ntohs(msg.msg_type), ntohl(msg.start_addr), ntohl(msg.bytes_to_send), ntohs(msg.file_name_len));
     printf("\nfile fragment request set\n");
 #endif
-    return sizeof(struct msg_client) + file_name_length;
+    return sizeof(struct file_fragment_request) + file_name_length;
 }
 
 void send_file_fragment_request(int sockfd, struct user_command* comm, char files_names_buffer[], char buffer[]) {
