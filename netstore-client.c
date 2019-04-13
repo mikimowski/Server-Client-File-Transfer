@@ -166,7 +166,7 @@ void receive_server_msg(int sockfd, struct msg_server *msg) {
         }
     }
     #ifdef DEBUG
-        printf("server msg received\n");
+        printf("server msg received: %d %d\n", msg->msg_type, msg->param);
     #endif
 }
 
@@ -200,12 +200,12 @@ void display_files_names_list(char files_names_buffer[], int32_t len) {
 }
 
 void read_user_command(struct user_command *comm) {
-  comm->file_id = 0;
+  comm->file_id = 2;
   comm->start_addr = 0;
-  comm->end_addr = 30;
-/*    scanf("%d", &comm->file_id);
-    scanf("%d", &comm->start_addr);
-    scanf("%d", &comm->end_addr);*/
+  comm->end_addr = 1000000;
+//    scanf("%d", &comm->file_id);
+//    scanf("%d", &comm->start_addr);
+//    scanf("%d", &comm->end_addr);
 }
 
 
@@ -231,23 +231,6 @@ uint16_t save_file_name(int32_t file_id, char file_name[], const char files_name
     return file_name_length;
 }
 
-/// Returns file's name length
-uint16_t fill_buffer_with_file_name(char file_name[], uint16_t file_name_length, char buffer[]) {
-#ifdef DEBUG
-    printf("filling buffer with file name\n");
-#endif
-    memcpy(buffer + sizeof(struct file_fragment_request), file_name, file_name_length);
-
-#ifdef DEBUG
-    printf("filling buffer with file name finished\n");
-    printf("file name: ");
-    int32_t i = 0;
-    for (i = sizeof(struct file_fragment_request); i < sizeof(struct file_fragment_request) + file_name_length; i++)
-        printf("%c", buffer[i]);
-    printf("\n");
-#endif
-    return file_name_length;
-}
 
 /// Returns data length in buffer
 size_t fill_buffer_with_fragment_request(const struct user_command *comm, char file_name[], uint16_t file_name_length, char buffer[]) {
@@ -277,9 +260,6 @@ void send_file_fragment_request(int sockfd, struct user_command* comm, char file
         syserr("partial / failed write");
 }
 
-void receive_file_fragment_info(int sockfd, struct msg_server *msg) {
-
-}
 
 void save_file_fragment(char file_name[], uint16_t file_name_length, char buffer[], struct user_command *comm) {
 #ifdef DEBUG
@@ -319,13 +299,22 @@ void receive_file_fragment(int sockfd, char buffer[]) {
 #endif
     ssize_t read_curr;
     size_t read_all = 0, remains;
-    size_t to_receive;
+    size_t bytes_to_receive;
     struct msg_server msg;
 
     receive_server_msg(sockfd, &msg);
-    to_receive = msg.param;
+    bytes_to_receive = msg.param;
+    // TODO error handling!  server moze zwrocic 1 2 3 itd
+
+    /**
+     * Czyttaj, min(buffsize, left_to_read)
+     * save jak odczytasz,
+     * przesun addres fragmentu w pliku o tyle ile zapisałeś
+     * lecisz dalej, kręcisz się tak w kolko aż całe odczytasz
+     */
+
     do {
-        remains = to_receive - read_all;
+        remains = bytes_to_receive - read_all;
         read_curr = read(sockfd, buffer + read_all, remains);
         if (read_curr < 0)
             syserr("reading message type");
@@ -334,8 +323,8 @@ void receive_file_fragment(int sockfd, char buffer[]) {
     } while (read_curr > 0);
 
 #ifdef DEBUG
-    for (int i = 0; i < to_receive; i++)
-        printf("%c", buffer[i]);
+   // for (int i = 0; i < to_receive; i++)
+     //   printf("%c", buffer[i]);
     printf("\nend of receive_file_fragment\n");
 #endif
 }
