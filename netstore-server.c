@@ -92,10 +92,11 @@ void send_msg(int msg_sockfd, int msg_type) {
 
 }
 
-void create_files_names_list(DIR *dir_stream, char files_names_list[], uint32_t *list_len) {
+void create_files_names_list(DIR *dir_stream, char files_names_list[], size_t *list_len) {
     struct dirent *dir_entry;
     struct stat statbuf;
 
+    rewinddir(dir_stream);
     while ((dir_entry = readdir(dir_stream))) {
         if (fstatat(dirfd(dir_stream), dir_entry->d_name, &statbuf, 0) != 0)
             syserr("going through directory failure");
@@ -127,8 +128,8 @@ void send_files_names(int msg_sockfd, DIR *dir_stream, char buffer[]) {
 
     create_files_names_list(dir_stream, buffer, &data_len);
 
-    msg.msg_type = 1;
-    msg.param = data_len - sizeof(struct msg_server);
+    msg.msg_type = htons(1);
+    msg.param = htonl(data_len - sizeof(struct msg_server));
     memcpy(buffer, &msg, sizeof(struct msg_server));
 
     if (write(msg_sockfd, buffer, data_len) != data_len)
@@ -240,7 +241,7 @@ void send_file_fragment(int msg_sockfd, DIR *dir_stream, const struct file_fragm
     if ((fd = openat(dir_fd, buffer, O_RDONLY)) < 0)
         syserr("file opening");
     lseek(fd, request->start_addr, SEEK_SET);
-        // TODO jak jakiś error to krzyczec...
+    // TODO jak jakiś error to krzyczec...
 
     read_from_file = read(fd, buffer + sizeof(struct msg_server), request->bytes_to_send);
     msg_to_send.msg_type = htons(FILE_FRAGMENT_SENDING);
@@ -283,8 +284,6 @@ void run_server(int server_sockfd, DIR *dir_stream, struct sockaddr_in *server_a
             default:
                 syserr("unknown message type");
         }
-
-        break;
     }
 }
 
