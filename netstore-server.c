@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <stdlib.h>
 
 #include "err.h"
 
@@ -73,12 +74,11 @@ void create_socket(int *sockfd) {
 #endif
 }
 
-void set_server_address(struct sockaddr_in *server_address, const int *port_num) {
+void set_server_address(struct sockaddr_in *server_address, int port_num) {
     memset(server_address, 0, sizeof(struct sockaddr_in));
     server_address->sin_family = AF_INET;
     server_address->sin_addr.s_addr = htonl(INADDR_ANY);
-    server_address->sin_port = htons(DEF_PORT_NUM);
-    server_address->sin_port = htons(port_num == NULL ? DEF_PORT_NUM : *port_num);
+    server_address->sin_port = htons(port_num);
 #ifdef DEBUG_DETAILED
     printf("server_address set\n");
 #endif
@@ -286,11 +286,11 @@ void send_file_fragment(int msg_sockfd, DIR *dir_stream, const struct file_fragm
     if (write(msg_sockfd, buffer, data_len) != data_len)
         syserr("partial / failed write");
 
-    do { // Send request number of bytes
+    do { // send requested number of bytes
         remains_to_send = bytes_to_send - already_sent;
 
         read_curr = already_read = 0;
-        do { // Read from file up to BUFF_SIZE bytes
+        do { // read from file up to BUFF_SIZE bytes
             remains_to_read = min(remains_to_send, BUFFER_SIZE) - already_read;
             if ((read_curr = read(fd, buffer + read_curr, remains_to_read)) < 0)
                 syserr("file reading");
@@ -298,13 +298,13 @@ void send_file_fragment(int msg_sockfd, DIR *dir_stream, const struct file_fragm
             already_read += read_curr;
         } while (read_curr > 0); // While read less than min(left_requested, buff_size)
 
-        // Send read bytes
+        // send read bytes
         sent_curr = already_read;
         data_len = already_read;
         if (write(msg_sockfd, buffer, data_len) != data_len)
             syserr("partial / failed write");
         already_sent += sent_curr;
-    } while (sent_curr > 0); // While sent less than requested
+    } while (sent_curr > 0); // while sent less than requested
 
     if (close(fd) < 0)
         syserr("file closing");
@@ -350,25 +350,17 @@ void run_server(int server_sockfd, DIR *dir_stream) {
 
 
 
-/**** DEBUGGING ****/
-void display_directory(DIR *dir_stream) {
-    struct dirent *dir_entry;
-
-    while ((dir_entry = readdir(dir_stream))) {
-        printf("%s\n", dir_entry->d_name);
-    }
-}
-
 
 
 int main(int argc, char *argv[]) {
     int32_t server_sockfd;
-    int32_t *port_num = NULL;
     DIR *dir_stream;
     struct sockaddr_in server_address;
+    int port_num;
 
     check_argc(argc, argv);
     char const *dir_path = argv[1];
+    port_num = argc == 3 ? atoi(argv[2]) : DEF_PORT_NUM;
 
     open_directory(dir_path, &dir_stream);
 
@@ -384,3 +376,7 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+
+
+
+// TODO err.c err.h
