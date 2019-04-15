@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 #include "err.h"
 
@@ -38,7 +39,7 @@ struct __attribute__((__packed__)) msg_server {
 };
 
 struct user_command {
-    int32_t file_id;
+    uint32_t file_id;
     uint32_t start_addr;
     uint32_t end_addr;
 };
@@ -50,6 +51,11 @@ size_t min(size_t a, size_t b) {
 void check_argc(int argc, char *argv[]) {
     if (argc != 2 && argc != 3)
         fatal("Usage %s <nazwa-lub-adres-IP4-serwera> [<numer-portu-serwera>]", argv[0]);
+}
+
+void handle_server_refusal(char const *msg) {
+    printf("%s\n", msg);
+    exit(0);
 }
 
 /******************************************** CONNECTION ******************************************/
@@ -137,11 +143,6 @@ void send_files_names_request(int sockfd) {
 #endif
 }
 
-void handle_server_refusal(char const *msg) {
-    printf("%s\n", msg);
-    exit(0);
-}
-
 void parse_server_msg(struct msg_server *msg) {
 #ifdef DEBUG_DETAILED
     printf("parsing server msg\n");
@@ -191,11 +192,11 @@ void receive_server_msg(int sockfd, struct msg_server *msg) {
     parse_server_msg(msg);
     check_server_msg(msg);
 #ifdef DEBUG
-    printf("server msg received: %d %d\n", msg->msg_type, msg->param);
+    printf("server msg received: %lu %lu\n", msg->msg_type, msg->param);
 #endif
 }
 
-void receive_files_names(int sockfd, char **files_names_buffer, uint32_t *list_len) {
+void receive_files_names(int sockfd, char **files_names_buffer, size_t *list_len) {
 #ifdef DEBUG
     printf("receive_files_names\n");
 #endif
@@ -222,7 +223,7 @@ void receive_files_names(int sockfd, char **files_names_buffer, uint32_t *list_l
 #endif
 }
 
-void display_files_names_list(char files_names_buffer[], int32_t len) {
+void display_files_names_list(char files_names_buffer[], size_t len) {
     uint16_t id = 0;
     for (int i = 0; i < len; i++) {
         printf("%d.", id++);
@@ -236,15 +237,18 @@ void read_user_command(struct user_command *comm) {
 //  comm->file_id = 2;
 //  comm->start_addr = 0;
 //  comm->end_addr = 1000000;
-  scanf("%d", &comm->file_id);
-  scanf("%d", &comm->start_addr);
-  scanf("%d", &comm->end_addr);
+    scanf("%" SCNu32, &comm->file_id);
+    scanf("%" SCNu32, &comm->start_addr);
+    scanf("%" SCNu32, &comm->end_addr);
 }
 
 
 /// Returns file's name length
 /// file_name ends with \0
-uint16_t save_file_name(int32_t file_id, char file_name[], const char files_names_buffer[]) {
+uint16_t save_file_name(int32_t file_id, char file_name[], const char files_names_buffer[], size_t files_names_list_length) {
+#ifdef DEBUG
+    printf("saving file_name\n");
+#endif
     int32_t curr_file_id = 0;
     uint16_t file_name_length = 0;
     int32_t i = 0, j = 0;
@@ -255,12 +259,15 @@ uint16_t save_file_name(int32_t file_id, char file_name[], const char files_name
         i++;
     }
 
-    while (files_names_buffer[i] != '|') {
+    while (i < files_names_list_length && files_names_buffer[i] != '|') {
         file_name[j++] = files_names_buffer[i++];
         file_name_length++;
     }
     file_name[file_name_length] = '\0';
 
+#ifdef DEBUG
+    printf("file_name saved\n");
+#endif
     return file_name_length;
 }
 
@@ -278,9 +285,8 @@ size_t fill_buffer_with_fragment_request(const struct user_command *comm, char f
     msg.file_name_len = htons(file_name_length);
     memcpy(buffer, &msg, sizeof(struct file_fragment_request));
     memcpy(buffer + sizeof(struct file_fragment_request), file_name, file_name_length);
-
 #ifdef DEBUG
-    printf("msg: %d %d %d %d\n", ntohs(msg.msg_type), ntohl(msg.start_addr), ntohl(msg.bytes_to_send), ntohs(msg.file_name_len));
+    printf("msg: %lu %lu %lu %lu\n", ntohs(msg.msg_type), ntohl(msg.start_addr), ntohl(msg.bytes_to_send), ntohs(msg.file_name_len));
     printf("\nfile fragment request sent\n");
 #endif
     return sizeof(struct file_fragment_request) + file_name_length;
@@ -347,7 +353,7 @@ void receive_file_fragment(int sockfd, char file_name[], char buffer[], uint32_t
 
     do {
         remains = bytes_to_receive - read_all;
-
+printf("remains = %lu\n", remains);
         read_all_inner = 0;
         do {
             remains_inner = min(BUFFER_SIZE, remains) - read_all_inner;
@@ -372,12 +378,12 @@ void receive_file_fragment(int sockfd, char file_name[], char buffer[], uint32_t
 #endif
 }
 
-int main(int argc, char *argv[]) {
+int main2(int argc, char *argv[]) {
     int sockfd;
     char *files_names_buffer = NULL;
     char buffer[BUFFER_SIZE];
     char file_name[MAX_FILE_NAME_LEN];
-    uint32_t list_len = 0;
+    size_t files_names_list_len = 0;
     uint16_t file_name_length;
     struct user_command comm;
 
@@ -386,10 +392,35 @@ int main(int argc, char *argv[]) {
 
     connect_with_server(&sockfd, argv[1], port);
     send_files_names_request(sockfd);
-    receive_files_names(sockfd, &files_names_buffer, &list_len);
-    display_files_names_list(files_names_buffer, list_len);
+    receive_files_names(sockfd, &files_names_buffer, &files_names_list_len);
+    display_files_names_list(files_names_buffer, files_names_list_len);
     read_user_command(&comm);
-    file_name_length = save_file_name(comm.file_id, file_name, files_names_buffer);
+    file_name_length = save_file_name(comm.file_id, file_name, files_names_buffer, files_names_list_len);
+    free(files_names_buffer); // No more needed
+    send_file_fragment_request(sockfd, &comm, file_name, file_name_length, buffer);
+    receive_file_fragment(sockfd, file_name, buffer, comm.start_addr);
+
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    int sockfd;
+    char *files_names_buffer = NULL;
+    char buffer[BUFFER_SIZE];
+    char file_name[MAX_FILE_NAME_LEN];
+    size_t files_names_list_len = 0;
+    uint16_t file_name_length;
+    struct user_command comm;
+
+    check_argc(argc, argv);
+    char const *port = argc == 3 ? argv[2] : DEF_PORT_NUM;
+
+    connect_with_server(&sockfd, argv[1], port);
+    send_files_names_request(sockfd);
+    receive_files_names(sockfd, &files_names_buffer, &files_names_list_len);
+    display_files_names_list(files_names_buffer, files_names_list_len);
+    read_user_command(&comm);
+    file_name_length = save_file_name(comm.file_id, file_name, files_names_buffer, files_names_list_len);
     free(files_names_buffer); // No more needed
     send_file_fragment_request(sockfd, &comm, file_name, file_name_length, buffer);
     receive_file_fragment(sockfd, file_name, buffer, comm.start_addr);

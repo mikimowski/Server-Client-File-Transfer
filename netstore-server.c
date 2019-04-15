@@ -9,16 +9,31 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "err.h"
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0x2000
+#endif
 
 #define DEF_PORT_NUM 6543
 #define QUEUE_LENGTH 5
 #define BUFFER_SIZE 512000
+
 #define NUMBER_OF_MSG_TYPES 2
+
+/// Files names request and its messages
 #define FILES_NAMES_REQUEST 1
 #define FILE_FRAGMENT_REQUEST 2
 #define FILE_FRAGMENT_SENDING 3
+#define FILES_NAMES_LIST 1
+
+/// Server refusal and its messages
+#define SERVER_REFUSAL 2
+#define FILE_ERROR 1
+#define WRONG_START_ADDRESS 2
+#define WRONG_FRAGMENT_SIZE 3
 
 #define DEBUG
 
@@ -34,7 +49,6 @@ struct __attribute__((__packed__)) msg_server {
     uint32_t param;
 };
 
-
 size_t min(size_t a, size_t b) {
     return a < b ? a : b;
 }
@@ -44,17 +58,19 @@ void check_argc(int argc, char *argv[]) {
         fatal("Usage %s <directory-with-files> [server-port-number]", argv[0]);
 }
 
-void open_directory(const char *dir_name, DIR **dir_stream) {
+void open_directory(const char *dir_name, DIR **dir_stream, int *dir_fd) {
 #ifdef DEBUG_DETAILED
     printf("opening directory: %s\n", dir_name);
 #endif
     *dir_stream = opendir(dir_name);
     if (*dir_stream == NULL)
         syserr("opening directory");
+
+    if ((*dir_fd = dirfd(*dir_stream)) < 0)
+        syserr("opening directory");
 #ifdef DEBUG_DETAILED
     printf("directory opened\n");
 #endif
-
 }
 
 void close_directory(DIR *dir_stream) {
@@ -64,6 +80,14 @@ void close_directory(DIR *dir_stream) {
     printf("directory closed\n");
 #endif
 }
+
+void handle_error(int sockfd, char const* msg) {
+    if (close(sockfd) < 0)
+        syserr("close");
+    printf("%s\n", msg);
+}
+
+/******************************************** CONNECTION ******************************************/
 
 void create_socket(int *sockfd) {
     *sockfd = socket(PF_INET, SOCK_STREAM, 0);
@@ -117,26 +141,46 @@ void accept_connection(int server_sockfd, int *msg_sockfd, struct sockaddr_in *c
 }
 
 
-void create_files_names_list(DIR *dir_stream, char files_names_list[], size_t *list_len) {
+/******************************************** MESSAGES ********************************************/
+
+void send_server_msg(int msg_sockfd, uint16_t msg_type, uint32_t param) {
+    struct msg_server msg;
+    msg.msg_type = htons(msg_type);
+    msg.param = htonl(param);
+
+    if (send(msg_sockfd, &msg, sizeof(struct msg_server), MSG_NOSIGNAL) != sizeof(struct msg_server) && errno != EPIPE)
+        syserr("partial / failed write");
+}
+
+void end_connection_early(int msg_sockfd, const char *msg) {
+    printf("%s: ending connection...\n", msg);
+    if (close(msg_sockfd) < 0)
+        syserr("close socket");
+}
+
+void create_files_names_list(DIR *dir_stream, int dir_fd, char files_names_list[], uint32_t *list_len) {
     struct dirent *dir_entry;
     struct stat statbuf;
+    bool first_file = true;
 
     rewinddir(dir_stream);
     while ((dir_entry = readdir(dir_stream))) {
-        if (fstatat(dirfd(dir_stream), dir_entry->d_name, &statbuf, 0) != 0)
-            syserr("going through directory failure");
+        if (fstatat(dir_fd, dir_entry->d_name, &statbuf, 0) != 0)
+            syserr("fstatat");
 
         if (!S_ISDIR(statbuf.st_mode)) {
+            if (!first_file)
+                files_names_list[(*list_len)++] = '|';
+            first_file = false;
+
             for (int i = 0; dir_entry->d_name[i] != '\0'; i++) {
                 files_names_list[*list_len] = dir_entry->d_name[i];
                 (*list_len)++;
             }
-            files_names_list[*list_len] = '|';
-            (*list_len)++;
         }
     }
 
-#ifdef DEBUG
+#ifdef DEBUG_DETAILED
     printf("directory list: ");
     for (int i = sizeof(struct msg_server); i < *list_len; i++)
         printf("%c", files_names_list[i]);
@@ -144,20 +188,16 @@ void create_files_names_list(DIR *dir_stream, char files_names_list[], size_t *l
 #endif
 }
 
-void send_files_names(int msg_sockfd, DIR *dir_stream, char buffer[]) {
+void send_files_names(int msg_sockfd, DIR *dir_stream, int dir_fd, char buffer[]) {
 #ifdef DEBUG
     printf("sending files names list\n");
 #endif
-    struct msg_server msg;
-    size_t data_len = sizeof(struct msg_server);
+    uint32_t data_len = 0;
 
-    create_files_names_list(dir_stream, buffer, &data_len);
+    create_files_names_list(dir_stream, dir_fd, buffer, &data_len);
+    send_server_msg(msg_sockfd, FILES_NAMES_LIST, data_len); // TODO if some error during creation send proper msg
 
-    msg.msg_type = htons(1);
-    msg.param = htonl(data_len - sizeof(struct msg_server));
-    memcpy(buffer, &msg, sizeof(struct msg_server));
-
-    if (write(msg_sockfd, buffer, data_len) != data_len)
+    if (send(msg_sockfd, buffer, data_len, MSG_NOSIGNAL) != data_len && errno != EPIPE)
         syserr("partial / failed write");
 #ifdef DEBUG
     printf("files name list sent\n");
@@ -165,20 +205,24 @@ void send_files_names(int msg_sockfd, DIR *dir_stream, char buffer[]) {
 }
 
 /**
- *
- * @param msg_type
- * @param expected
- * @param len
- * @return True if msg_type was one of accepted msg_types in current state
+ * @return true if msg_type was one of accepted msg_types in current state
  */
-bool is_expected(uint16_t msg_type, const uint16_t accepted[], size_t len) {
+bool is_accepted(uint16_t msg_type, const uint16_t *acceptable, size_t len) {
     for (size_t i = 0; i < len; i++)
-        if (msg_type == accepted[i])
+        if (msg_type == acceptable[i])
             return true;
     return false;
 }
 
-uint16_t read_msg_type(int msg_sockfd, const uint16_t accepted[], size_t len) {
+/**
+ *
+ * @param msg_sockfd
+ * @param acceptable - array integers representing acceptable msg_types in current state of the server
+ * @param len - length of the acceptable array
+ * @return true if received msg_type is accepted in current state of the server
+ *         false otherwise
+ */
+int32_t read_msg_type(int msg_sockfd, const uint16_t acceptable[], size_t len) {
 #ifdef DEBUG
     printf("reading msg type\n");
 #endif
@@ -197,11 +241,11 @@ uint16_t read_msg_type(int msg_sockfd, const uint16_t accepted[], size_t len) {
 
     msg_type = ntohs(msg_type);
 
-    if (!is_expected(msg_type, accepted, len))
-        syserr("wrong msg_type");
 #ifdef DEBUG
     printf("msg type read: %d\n", msg_type);
 #endif
+    if (!is_accepted(msg_type, acceptable, len))
+        return -1;
     return msg_type;
 }
 
@@ -227,7 +271,7 @@ void receive_file_fragment_request_header(int msg_sockfd, struct file_fragment_r
     msg->file_name_len = ntohs(msg->file_name_len);
 #ifdef DEBUG
     printf("msg_info: ");
-    printf("%d %d %d\n", msg->start_addr, msg->bytes_to_send, msg->file_name_len);
+    printf("%lu %lu %lu\n", msg->start_addr, msg->bytes_to_send, msg->file_name_len);
     printf("file fragment request header received\n");
 #endif
 }
@@ -247,6 +291,8 @@ void receive_file_fragment_request_file_name(int msg_sockfd, uint16_t file_name_
 
         read_all += read_curr;
     } while (read_curr > 0);
+
+    buffer[file_name_len] = '\0'; // so that we can use it in open()
 #ifdef DEBUG
     printf("file name: ");
     for (int i = 0; i < file_name_len; i++)
@@ -256,65 +302,120 @@ void receive_file_fragment_request_file_name(int msg_sockfd, uint16_t file_name_
 #endif
 }
 
+/**
+ *
+ * @param fd
+ * @param dir_stream
+ * @param buffer
+ * @param start_addr
+ * @return file size in bytes on success
+ *         -1 if any error occurred
+ */
+ssize_t prepare_file(int *fd, int dir_fd, char buffer[], uint32_t start_addr) {
+    struct stat fstat_buff;
 
-void send_file_fragment(int msg_sockfd, DIR *dir_stream, const struct file_fragment_request *request, char buffer[]) {
+    if ((*fd = openat(dir_fd, buffer, O_RDONLY)) < 0) {
+        msgerr("file opening failed");
+        return -1;
+    }
+
+    if (fstat(*fd, &fstat_buff) < 0) {
+        msgerr("lstat error");
+        return -1;
+    }
+
+    if (S_ISDIR(fstat_buff.st_mode)) {
+        if (close(*fd) < 0)
+            syserr("file closing");
+        return -1;
+    }
+
+    if (lseek(*fd, start_addr, SEEK_SET) < 0) {
+        msgerr("lseek error");
+        return -1;
+    }
+
+    return fstat_buff.st_size;
+}
+
+
+int check_start_addr(uint32_t start_addr, size_t file_size) {
+    if (start_addr >= file_size)
+        return -1;
+    return 0;
+}
+
+int check_fragment_length(uint32_t fragment_length) {
+    if (fragment_length == 0)
+        return -1;
+    return 0;
+}
+
+int request_setup(int msg_sockfd, int *fd, ssize_t *file_size, const struct file_fragment_request *request,
+        int dir_fd, char *buffer) {
+    if (check_fragment_length(request->bytes_to_send) < 0) {
+        send_server_msg(msg_sockfd, SERVER_REFUSAL, WRONG_FRAGMENT_SIZE);
+        end_connection_early(msg_sockfd, "wrong fragment length");
+        return -1;
+    }
+    if ((*file_size = prepare_file(fd, dir_fd, buffer, request->start_addr)) < 0) {
+        send_server_msg(msg_sockfd, SERVER_REFUSAL, FILE_ERROR);
+        end_connection_early(msg_sockfd, "wrong file name");
+        return -1;
+    }
+    if (check_start_addr(request->start_addr, (size_t)*file_size) < 0) {
+        send_server_msg(msg_sockfd, SERVER_REFUSAL, WRONG_START_ADDRESS);
+        end_connection_early(msg_sockfd, "wrong start address");
+        if (close(*fd) < 0)
+            syserr("file closing");
+        return -1;
+    }
+
+    return 0;
+}
+
+void send_file_fragment(int msg_sockfd, int dir_fd, const struct file_fragment_request *request, char buffer[]) {
 #ifdef DEBUG
     printf("send_file_fragment\n");
 #endif
-    int dir_fd = dirfd(dir_stream);
     int fd;
-    struct msg_server msg_to_send;
-    struct stat fstat_buff;
     size_t data_len, bytes_to_send, remains_to_send, remains_to_read, already_sent = 0, already_read;
-    ssize_t read_curr, sent_curr;
+    ssize_t read_curr, sent_curr, file_size;
 
-    buffer[request->file_name_len] = '\0'; // So that we can use it in open()
-    if ((fd = openat(dir_fd, buffer, O_RDONLY)) < 0)
-        syserr("file opening");
+    if (request_setup(msg_sockfd, &fd, &file_size, request, dir_fd, buffer) == 0) {
+        bytes_to_send = min(request->bytes_to_send, (uint32_t) (file_size - request->start_addr));
+        send_server_msg(msg_sockfd, FILE_FRAGMENT_SENDING, (uint32_t) bytes_to_send);
 
-    if (fstat(fd, &fstat_buff) < 0)
-        syserr("lstat error");
-    bytes_to_send = min(request->bytes_to_send, (uint32_t)(fstat_buff.st_size - request->start_addr));
+        do { // send requested number of bytes
+            remains_to_send = bytes_to_send - already_sent;
 
-    if (lseek(fd, request->start_addr, SEEK_SET) < 0)
-        syserr("lseek error");
+            read_curr = already_read = 0;
+            do { // read from file up to BUFF_SIZE bytes
+                remains_to_read = min(remains_to_send, BUFFER_SIZE) - already_read;
+                if ((read_curr = read(fd, buffer + read_curr, remains_to_read)) < 0)
+                    syserr("file reading");
 
-    msg_to_send.msg_type = htons(FILE_FRAGMENT_SENDING);
-    msg_to_send.param = htonl(bytes_to_send);
-    memcpy(buffer, &msg_to_send, sizeof(struct msg_server));
-    data_len = sizeof(struct msg_server);
-    if (write(msg_sockfd, buffer, data_len) != data_len)
-        syserr("partial / failed write");
+                already_read += read_curr;
+            } while (read_curr > 0); // While read less than min(left_requested, buff_size)
 
-    do { // send requested number of bytes
-        remains_to_send = bytes_to_send - already_sent;
+            // send read bytes
+            sent_curr = already_read;
+            data_len = already_read;
+            if (send(msg_sockfd, buffer, data_len, MSG_NOSIGNAL) != data_len && errno != EPIPE)
+                syserr("partial / failed write");
+            already_sent += sent_curr;
+        } while (sent_curr > 0); // while sent less than requested
 
-        read_curr = already_read = 0;
-        do { // read from file up to BUFF_SIZE bytes
-            remains_to_read = min(remains_to_send, BUFFER_SIZE) - already_read;
-            if ((read_curr = read(fd, buffer + read_curr, remains_to_read)) < 0)
-                syserr("file reading");
-
-            already_read += read_curr;
-        } while (read_curr > 0); // While read less than min(left_requested, buff_size)
-
-        // send read bytes
-        sent_curr = already_read;
-        data_len = already_read;
-        if (write(msg_sockfd, buffer, data_len) != data_len)
-            syserr("partial / failed write");
-        already_sent += sent_curr;
-    } while (sent_curr > 0); // while sent less than requested
-
-    if (close(fd) < 0)
-        syserr("file closing");
+        if (close(fd) < 0)
+            syserr("file closing");
+    }
 #ifdef DEBUG
     printf("end of send_file_fragment\n");
 #endif
 }
 
 
-void run_server(int server_sockfd, DIR *dir_stream) {
+void run_server(int server_sockfd, DIR *dir_stream, int dir_fd) {
 #ifdef DEBUG
     printf("run_server starting...\n");
 #endif
@@ -322,24 +423,28 @@ void run_server(int server_sockfd, DIR *dir_stream) {
     struct sockaddr_in client_address;
     struct file_fragment_request request_msg;
     char buffer[BUFFER_SIZE];
-    uint16_t accepted[NUMBER_OF_MSG_TYPES];
+    uint16_t acceptable[NUMBER_OF_MSG_TYPES];
 
     while (true) {
+        printf("\nwaiting for connection\n");
         accept_connection(server_sockfd, &msg_sockfd, &client_address);
 
-        accepted[0] = 1, accepted[1] = 2;
-        switch (read_msg_type(msg_sockfd, accepted, 2)) {
+        acceptable[0] = 1, acceptable[1] = 2;
+        switch (read_msg_type(msg_sockfd, acceptable, 2)) {
             case FILES_NAMES_REQUEST:
-                send_files_names(msg_sockfd, dir_stream, buffer);
-                accepted[0] = 2;
-                read_msg_type(msg_sockfd, accepted, 1);
+                send_files_names(msg_sockfd, dir_stream, dir_fd, buffer);
+                acceptable[0] = 2;
+                if (read_msg_type(msg_sockfd, acceptable, 1) < 0) {
+                    end_connection_early(msg_sockfd, "wrong message type");
+                    continue;
+                }
             case FILE_FRAGMENT_REQUEST:
                 receive_file_fragment_request_header(msg_sockfd, &request_msg);
                 receive_file_fragment_request_file_name(msg_sockfd, request_msg.file_name_len, buffer);
-                send_file_fragment(msg_sockfd, dir_stream, &request_msg, buffer);
+                send_file_fragment(msg_sockfd, dir_fd, &request_msg, buffer);
                 break;
             default:
-                syserr("unknown message type");
+                end_connection_early(msg_sockfd, "wrong message type");
         }
     }
 
@@ -349,27 +454,24 @@ void run_server(int server_sockfd, DIR *dir_stream) {
 }
 
 
-
-
-
 int main(int argc, char *argv[]) {
     int32_t server_sockfd;
     DIR *dir_stream;
     struct sockaddr_in server_address;
-    int port_num;
+    int port_num, dir_fd;
 
     check_argc(argc, argv);
     char const *dir_path = argv[1];
     port_num = argc == 3 ? atoi(argv[2]) : DEF_PORT_NUM;
 
-    open_directory(dir_path, &dir_stream);
+    open_directory(dir_path, &dir_stream, &dir_fd);
 
     create_socket(&server_sockfd);
     set_server_address(&server_address, port_num);
     bind_socket(server_sockfd, &server_address);
     set_listen(server_sockfd);
 
-    run_server(server_sockfd, dir_stream);
+    run_server(server_sockfd, dir_stream, dir_fd);
 
     close_directory(dir_stream);
     close_socket(server_sockfd);
@@ -380,3 +482,4 @@ int main(int argc, char *argv[]) {
 
 
 // TODO err.c err.h
+// TODO... pliki ukryte powinny byc dostepne S_ISREG zamiast isdir czy cos takiego
