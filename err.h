@@ -1,13 +1,13 @@
 #ifndef _ERR_
 #define _ERR_
 
-/* Wypisuje informację o błędnym zakończeniu funkcji systemowej
-i kończy działanie programu. */
+/* Display information about system function error and ends the program */
 extern void syserr(const char *fmt, ...);
 
-/* Wypisuje informację o błędzie i kończy działanie programu. */
+/* Displays information about error and ends the program */
 extern void fatal(const char *fmt, ...);
 
+/* Displays information about error */
 extern void msgerr(const char *fmt, ...);
 
 #endif

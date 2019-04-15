@@ -4,13 +4,14 @@ CC = cc
 CFLAGS = -Wall -O2
 LFLAGS = -Wall
 
-netstore-server.o: err.h
+server.o: err.h
+client.o: err.h
 
-netstore-server: netstore-server.o err.o
+netstore-server: server.o err.o
 	$(CC) $(LFLAGS) $^ -o $@
 
-netstore-client: netstore-client.o err.o
+netstore-client: client.o err.o
 	$(CC) $(LFLAGS) $^ -o $@
 
 clean:
-	rm -f netstore-server netstore-client *.o
+	rm -f server client *.o
