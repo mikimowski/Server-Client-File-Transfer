@@ -136,7 +136,9 @@ void accept_connection(int server_sockfd, int *msg_sockfd, struct sockaddr_in *c
 }
 
 void end_connection_msg() {
+#ifdef ANALYSIS
     printf("\n************************************* CONNECTION ENDED *********************************************\n\n");
+#endif
 }
 
 /******************************************** MESSAGES ********************************************/
